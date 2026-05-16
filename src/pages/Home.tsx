@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { MapContainer, TileLayer, Circle, Marker, Popup, useMap, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
 import { useAnalysis } from '../hooks/useAnalysis'
 import type { AnalyzedSpot, WeightConfig } from '../types'
 import { getSavedSpots, saveSpot, deleteSpot } from '../db/spots'
@@ -118,10 +119,9 @@ export function Home() {
   const topSpots = results.slice(0, 30)
 
   return (
-    <div className="bg-sp-bg h-dvh flex flex-col overflow-hidden">
-      {/* Top controls */}
+    <div className="bg-sp-bg text-sp-text fixed inset-0 flex flex-col overflow-hidden">
       <div
-        className="shrink-0 px-4 pt-[env(safe-area-inset-top,16px)] pb-3 bg-sp-card/90 backdrop-blur border-b border-sp-border z-20"
+        className="shrink-0 px-4 pt-[env(safe-area-inset-top,16px)] pb-3 bg-sp-card/90 backdrop-blur border-b border-sp-border z-30"
       >
         <div className="flex items-center justify-between mb-3">
           <h1 className="text-lg font-bold text-white">Spot Explorer</h1>
@@ -189,12 +189,13 @@ export function Home() {
       </div>
 
       {/* Map */}
-      <div className="flex-1 relative">
+      <div className="flex-1 min-h-0 relative z-10">
         <MapContainer
+          key={`${center.lat.toFixed(2)},${center.lng.toFixed(2)},${radius}`}
           center={[center.lat, center.lng]}
           zoom={radius > 10000 ? 10 : radius > 5000 ? 12 : 14}
           scrollWheelZoom
-          style={{ height: '100%', width: '100%' }}
+          className="h-full w-full"
           zoomControl={false}
         >
           <TileLayer
@@ -248,7 +249,7 @@ export function Home() {
 
       {/* Bottom sheet */}
       <div
-        className={`shrink-0 bg-sp-card/95 backdrop-blur border-t border-sp-border transition-all duration-300 z-20 ${
+        className={`shrink-0 bg-sp-card/95 backdrop-blur border-t border-sp-border transition-all duration-300 z-30 ${
           bottomSheetExpanded ? 'h-[45%]' : 'h-[120px]'
         }`}
       >
