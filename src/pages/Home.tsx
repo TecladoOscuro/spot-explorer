@@ -255,10 +255,12 @@ export function Home() {
             </Marker>
           ))}
 
-          {selectedSpot && waterGeoJson.map((p, i) => (
-            <Marker key={`w-${i}`} position={[p.lat, p.lng]} icon={waterDotIcon}
-              opacity={0.5} />
-          ))}
+          {selectedSpot && (() => {
+            const dots = waterGeoJson.filter((_, i) => i % Math.max(1, Math.ceil(waterGeoJson.length / 300)) === 0)
+            return dots.map((p, i) => (
+              <Marker key={`w-${i}`} position={[p.lat, p.lng]} icon={waterDotIcon} />
+            ))
+          })()}
         </MapContainer>
 
         <Legend />

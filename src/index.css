@@ -36,3 +36,11 @@ body {
   z-index: 1;
   background: #1a1a26 !important;
 }
+
+.custom-marker,
+.selected-marker,
+.center-marker,
+.water-dot {
+  background: transparent !important;
+  border: none !important;
+}
