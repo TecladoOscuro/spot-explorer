@@ -359,7 +359,6 @@ export function Home() {
               )}
             </div>
           ) : (
-            // Results list or empty state
             <>
               {savedSpots.length > 0 && (
                 <div className="mb-4">
@@ -410,7 +409,7 @@ export function Home() {
                     ))}
                   </div>
                 </>
-              ) : !isAnalyzing && savedSpots.length === 0 && (
+              ) : savedSpots.length === 0 && (
                 <div className="text-center text-sp-muted text-sm py-6">
                   <div className="text-3xl mb-2">🗺️</div>
                   <p>Toca el mapa para centrar</p>

@@ -1,210 +1,246 @@
 import { useState, useCallback, useRef } from 'react'
 import type { AnalyzedSpot, LatLng, WeightConfig } from '../types'
 
+function generateGrid(center: LatLng, radiusM: number, densityM: number): LatLng[] {
+  const points: LatLng[] = []
+  const degPerM = 1 / 111320
+  const latD = radiusM * degPerM
+  const latStep = densityM * degPerM
+  const cosLat = Math.cos((center.lat * Math.PI) / 180) || 1
+  const lngD = latD / cosLat
+  const lngStep = latStep / cosLat
+
+  const lat0 = center.lat - latD
+  const lng0 = center.lng - lngD
+
+  for (let r = 0; r * latStep <= 2 * latD; r++) {
+    const lat = lat0 + r * latStep
+    for (let c = 0; c * lngStep <= 2 * lngD; c++) {
+      const lng = lng0 + c * lngStep
+      const dy = (lat - center.lat) * 111320
+      const dx = (lng - center.lng) * 111320 * cosLat
+      if (Math.sqrt(dx * dx + dy * dy) <= radiusM) {
+        points.push({ lat, lng })
+      }
+    }
+  }
+  return points
+}
+
+async function fetchElevations(points: LatLng[]): Promise<Map<string, number>> {
+  const map = new Map<string, number>()
+  let remaining = [...points]
+  while (remaining.length > 0) {
+    const batch = remaining.slice(0, 80)
+    remaining = remaining.slice(80)
+    const locs = batch.map(p => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join('|')
+    try {
+      const res = await fetch(
+        `https://api.opentopodata.org/v1/srtm30m?locations=${locs}`,
+        { signal: AbortSignal.timeout(8000) }
+      )
+      if (res.ok) {
+        const data = await res.json()
+        for (let i = 0; i < batch.length && i < (data.results || []).length; i++) {
+          const el = data.results[i]?.elevation
+          if (typeof el === 'number') {
+            map.set(`${batch[i].lat.toFixed(6)},${batch[i].lng.toFixed(6)}`, el)
+          }
+        }
+      }
+    } catch { /* skip failed batch */ }
+  }
+  return map
+}
+
 interface GeoFeatures {
   waterNodes: { lat: number; lng: number }[]
   pathNodes: { lat: number; lng: number }[]
   roadNodes: { lat: number; lng: number }[]
 }
 
-function generateGrid(center: LatLng, radiusM: number, densityM: number): LatLng[] {
-  const points: LatLng[] = []
-  const latStep = densityM / 111320
-  const lngBase = densityM / (111320 * Math.cos(center.lat * Math.PI / 180))
-  for (let lat = center.lat - radiusM / 111320; lat <= center.lat + radiusM / 111320; lat += latStep) {
-    for (let lng = center.lng - lngBase * (radiusM / densityM); lng <= center.lng + lngBase * (radiusM / densityM); lng += lngBase) {
-      const dLat = (lat - center.lat) * 111320
-      const dLng = (lng - center.lng) * 111320 * Math.cos(center.lat * Math.PI / 180)
-      if (Math.sqrt(dLat * dLat + dLng * dLng) <= radiusM) points.push({ lat, lng })
-    }
-  }
-  return points
+function getBbox(center: LatLng, radiusM: number): string {
+  const d = radiusM / 111320
+  const cos = Math.cos((center.lat * Math.PI) / 180) || 1
+  return `${(center.lng - d / cos).toFixed(5)},${(center.lat - d).toFixed(5)},${(center.lng + d / cos).toFixed(5)},${(center.lat + d).toFixed(5)}`
 }
 
-function getBbox(center: LatLng, radiusM: number): string {
-  const dLat = radiusM / 111320
-  const dLng = radiusM / (111320 * Math.cos(center.lat * Math.PI / 180))
-  return `${center.lng - dLng},${center.lat - dLat},${center.lng + dLng},${center.lat + dLat}`
+async function queryOverpass(osmQuery: string): Promise<{ lat: number; lng: number }[]> {
+  const nodes: { lat: number; lng: number }[] = []
+  try {
+    const res = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      body: osmQuery,
+      signal: AbortSignal.timeout(12000),
+    })
+    if (!res.ok) return nodes
+    const data = await res.json()
+    for (const el of data.elements || []) {
+      if (el.geometry) {
+        for (const pt of el.geometry) {
+          nodes.push({ lat: pt.lat, lng: pt.lon })
+        }
+      }
+    }
+  } catch { /* offline or timeout */ }
+  return nodes
 }
 
 async function fetchGeoFeatures(center: LatLng, radiusM: number): Promise<GeoFeatures> {
-  const bbox = getBbox(center, radiusM * 1.3)
+  const bbox = getBbox(center, radiusM * 1.5)
+  const empty = { waterNodes: [] as { lat: number; lng: number }[], pathNodes: [] as { lat: number; lng: number }[], roadNodes: [] as { lat: number; lng: number }[] }
 
-  const waterQuery = `[out:json];(way["waterway"]( ${bbox});way["water"]( ${bbox});way["natural"~"water|bay"]( ${bbox}););out geom;`
-  const pathQuery = `[out:json];(way["highway"~"path|track|footway|cycleway|bridleway|steps"]( ${bbox}););out geom;`
-  const roadQuery = `[out:json];(way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified"]( ${bbox}););out geom;`
+  const waterQ = `[out:json];(way["waterway"]( ${bbox});way["water"]( ${bbox});way["natural"~"water"]( ${bbox}););out geom;`
+  const pathQ = `[out:json];(way["highway"~"path|track|footway|cycleway|bridleway|steps"]( ${bbox});way["highway"~"service|living_street|pedestrian"]( ${bbox}););out geom;`
+  const roadQ = `[out:json];(way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified"]( ${bbox}););out geom;`
 
-  async function queryOverpass(q: string): Promise<{ lat: number; lng: number }[]> {
-    const nodes: { lat: number; lng: number }[] = []
-    try {
-      const res = await fetch('https://overpass-api.de/api/interpreter', {
-        method: 'POST',
-        body: q,
-        signal: AbortSignal.timeout(10000),
-      })
-      if (!res.ok) return nodes
-      const data = await res.json()
-      for (const el of data.elements || []) {
-        if (el.geometry) {
-          for (const pt of el.geometry) {
-            nodes.push({ lat: pt.lat, lng: pt.lon })
-          }
-        }
-      }
-    } catch { /* ignore */ }
-    return nodes
-  }
-
-  const [waterNodes, pathNodes, roadNodes] = await Promise.all([
-    queryOverpass(waterQuery),
-    queryOverpass(pathQuery),
-    queryOverpass(roadQuery),
-  ])
-
-  return { waterNodes, pathNodes, roadNodes }
-}
-
-async function fetchElevationBatch(points: LatLng[]): Promise<number[]> {
-  const locs = points.map(p => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join('|')
   try {
-    const res = await fetch(
-      `https://api.opentopodata.org/v1/srtm30m?locations=${locs}`,
-      { signal: AbortSignal.timeout(10000) }
-    )
-    if (!res.ok) return points.map(() => 0)
-    const data = await res.json()
-    if (!data.results) return points.map(() => 0)
-    return data.results.map((r: { elevation: number }) => r.elevation ?? 0)
+    const [water, paths, roads] = await Promise.all([
+      queryOverpass(waterQ), queryOverpass(pathQ), queryOverpass(roadQ)
+    ])
+    return { waterNodes: water, pathNodes: paths, roadNodes: roads }
   } catch {
-    return points.map(() => 0)
+    return empty
   }
 }
 
-function distKm(a: LatLng, b: { lat: number; lng: number }): number {
-  const R = 6371
-  const dLat = (b.lat - a.lat) * Math.PI / 180
-  const dLng = (b.lng - a.lng) * Math.PI / 180
-  const sinLat = Math.sin(dLat / 2)
-  const sinLng = Math.sin(dLng / 2)
-  const h = sinLat * sinLat + Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * sinLng * sinLng
-  return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h))
+function elAt(elMap: Map<string, number>, p: LatLng): number {
+  return elMap.get(`${p.lat.toFixed(6)},${p.lng.toFixed(6)}`) ?? 0
 }
 
-function nearestDist(point: LatLng, nodes: { lat: number; lng: number }[]): number {
+function fastNearestDist(
+  pt: LatLng,
+  nodes: { lat: number; lng: number }[],
+  maxCheck: number = 800
+): number {
   if (nodes.length === 0) return 9999
-  let min = Infinity
-  for (let i = 0; i < nodes.length; i++) {
-    const d = distKm(point, nodes[i])
-    if (d < min) min = d
+  const step = Math.max(1, Math.floor(nodes.length / maxCheck))
+  let minD = Infinity
+  for (let i = 0; i < nodes.length; i += step) {
+    const n = nodes[i]
+    const dLat = (n.lat - pt.lat) * 111320
+    const dLng = (n.lng - pt.lng) * 111320 * Math.cos(pt.lat * Math.PI / 180)
+    const d = Math.sqrt(dLat * dLat + dLng * dLng)
+    if (d < minD) minD = d
   }
-  return Math.round(min * 1000)
+  return Math.round(minD)
 }
 
-function calcSunScore(aspect: string, slope: number): number {
-  let score = 50
-  if (aspect === 'Sur') score = 90
-  else if (aspect === 'Sureste' || aspect === 'Suroeste') score = 80
-  else if (aspect === 'Este' || aspect === 'Oeste') score = 65
-  else if (aspect === 'Norte') score = 30
-  if (slope > 3 && slope < 25) score += 8
-  if (slope > 25 && slope < 35) score -= 10
-  if (slope > 35) score -= 25
-  return Math.max(0, Math.min(100, score))
+function calcSun(aspect: string, slope: number): number {
+  let s: number
+  if (aspect.startsWith('Sur')) s = slope > 2 && slope < 30 ? 92 : 88
+  else if (aspect.includes('Sur')) s = 78
+  else if (aspect === 'Este' || aspect === 'Oeste') s = 65
+  else if (aspect === 'Plano') s = 60
+  else s = 30
+  if (slope > 30 && slope < 40) s -= 15
+  if (slope > 40) s -= 30
+  return Math.max(0, Math.min(100, s))
 }
 
-function calcWaterScore(distM: number): number {
-  if (distM > 9998) return 5
-  if (distM < 20) return 30
-  if (distM < 50) return 55
-  if (distM < 200) return 100 - Math.abs(distM - 100) / 2
-  if (distM < 500) return Math.max(0, 80 - distM / 10)
-  return Math.max(0, 25 - distM / 60)
+function calcWater(d: number): number {
+  if (d > 9000) return 0
+  if (d < 15) return 20
+  if (d < 40) return 45
+  if (d < 120) return 70 + Math.round((120 - d) * 0.33)
+  if (d < 300) return Math.max(0, 85 - Math.round((d - 120) * 0.2))
+  if (d < 800) return Math.max(0, 40 - Math.round((d - 300) * 0.08))
+  return 5
 }
 
-function calcWindScore(elevVar: number): number {
-  if (elevVar > 40) return 90
-  if (elevVar > 20) return 75
-  if (elevVar > 8) return 55
-  return 30
+function calcWind(elevVar: number): number {
+  if (elevVar > 35) return 88
+  if (elevVar > 18) return 72
+  if (elevVar > 7) return 50
+  return 28
 }
 
-function calcPrivacyScore(distToAnyPath: number): number {
-  if (distToAnyPath > 9998) return 100
-  if (distToAnyPath > 2000) return 98
-  if (distToAnyPath > 1000) return 92
-  if (distToAnyPath > 600) return 85
-  if (distToAnyPath > 300) return 65
-  if (distToAnyPath > 150) return 40
-  if (distToAnyPath > 80) return 20
-  if (distToAnyPath > 40) return 8
+function calcPrivacy(d: number): number {
+  if (d > 9000) return 100
+  if (d > 1500) return 98
+  if (d > 800) return 90
+  if (d > 400) return 75
+  if (d > 200) return 50
+  if (d > 100) return 25
+  if (d > 50) return 10
+  if (d > 20) return 3
   return 0
 }
 
-function calcAccessScore(distToRoad: number, slope: number): number {
-  let score: number
-  if (distToRoad > 9998) score = 20
-  else if (distToRoad < 30) score = 5
-  else if (distToRoad < 100) score = 40
-  else if (distToRoad < 500) score = 85
-  else if (distToRoad < 1000) score = 60
-  else score = 30
-  if (slope > 35) score -= 35
-  else if (slope > 20) score -= 12
-  if (distToRoad > 2000) score -= 10
-  return Math.max(0, Math.min(100, score))
+function calcAccess(d: number, slope: number): number {
+  let s: number
+  if (d > 9000) s = 10
+  else if (d < 20) s = 5
+  else if (d < 60) s = 20
+  else if (d < 200) s = 65
+  else if (d < 600) s = 85
+  else s = 50
+  if (slope > 35) s -= 35
+  else if (slope > 20) s -= 15
+  return Math.max(0, Math.min(100, s))
 }
 
-function weightedScore(
-  m: { sunScore: number; waterScore: number; windScore: number; privacyScore: number; accessScore: number },
-  weights: WeightConfig
-): number {
-  const total = weights.sun + weights.water + weights.wind + weights.privacy + weights.access
-  return (m.sunScore * weights.sun + m.waterScore * weights.water +
-    m.windScore * weights.wind + m.privacyScore * weights.privacy +
-    m.accessScore * weights.access) / total
-}
-
-function calculateAspect(lat: number, lng: number, elev: number, neighbors: { lat: number; lng: number; el: number }[]): string {
+function aspectStr(pt: LatLng, el: number, elMap: Map<string, number>, grid: LatLng[]): string {
+  const neighbors = grid
+    .filter(g => g.lat !== pt.lat || g.lng !== pt.lng)
+    .slice(0, 8)
+    .map(g => ({ p: g, el: elAt(elMap, g) }))
+    .sort((a, b) => {
+      const da = (a.p.lat - pt.lat) ** 2 + (a.p.lng - pt.lng) ** 2
+      const db = (b.p.lat - pt.lat) ** 2 + (b.p.lng - pt.lng) ** 2
+      return da - db
+    })
   if (neighbors.length < 2) return 'Plano'
-  const sorted = [...neighbors].sort((a, b) => {
-    const da = (a.lat - lat) ** 2 + (a.lng - lng) ** 2
-    const db = (b.lat - lat) ** 2 + (b.lng - lng) ** 2
-    return da - db
-  })
-  const diff = elev - sorted[0].el
-  if (Math.abs(diff) < 1) return 'Plano'
-  const dLat = sorted[0].lat - lat
-  const dLng = sorted[0].lng - lng
-  const angle = Math.atan2(dLng, dLat) * 180 / Math.PI
-  if (angle > -22.5 && angle <= 22.5) return diff > 0 ? 'Norte' : 'Sur'
-  if (angle > 22.5 && angle <= 67.5) return diff > 0 ? 'Noreste' : 'Suroeste'
-  if (angle > 67.5 && angle <= 112.5) return diff > 0 ? 'Este' : 'Oeste'
-  if (angle > 112.5 && angle <= 157.5) return diff > 0 ? 'Sureste' : 'Noroeste'
-  if (angle > 157.5 || angle <= -157.5) return diff > 0 ? 'Sur' : 'Norte'
-  if (angle > -157.5 && angle <= -112.5) return diff > 0 ? 'Suroeste' : 'Noreste'
-  if (angle > -112.5 && angle <= -67.5) return diff > 0 ? 'Oeste' : 'Este'
-  return diff > 0 ? 'Noroeste' : 'Sureste'
+  const n = neighbors[0]
+  if (Math.abs(el - n.el) < 1) return 'Plano'
+  const da = n.p.lat - pt.lat
+  const dl = n.p.lng - pt.lng
+  const ang = Math.atan2(dl, da) * 180 / Math.PI
+  const down = el > n.el
+  if (ang > -22.5 && ang <= 22.5) return down ? 'Norte' : 'Sur'
+  if (ang > 22.5 && ang <= 67.5) return down ? 'Noreste' : 'Suroeste'
+  if (ang > 67.5 && ang <= 112.5) return down ? 'Este' : 'Oeste'
+  if (ang > 112.5 && ang <= 157.5) return down ? 'Sureste' : 'Noroeste'
+  if (ang > 157.5 || ang <= -157.5) return down ? 'Sur' : 'Norte'
+  if (ang > -157.5 && ang <= -112.5) return down ? 'Suroeste' : 'Noreste'
+  if (ang > -112.5 && ang <= -67.5) return down ? 'Oeste' : 'Este'
+  return down ? 'Noroeste' : 'Sureste'
 }
 
-function generateStrengths(
+function slopeDeg(pt: LatLng, el: number, elMap: Map<string, number>, grid: LatLng[]): number {
+  for (const g of grid) {
+    if (g.lat === pt.lat && g.lng === pt.lng) continue
+    const diff = Math.abs(el - elAt(elMap, g))
+    if (diff > 0) {
+      const d = Math.sqrt(
+        ((g.lat - pt.lat) * 111320) ** 2 +
+        ((g.lng - pt.lng) * 111320 * Math.cos(pt.lat * Math.PI / 180)) ** 2
+      )
+      if (d > 0) return Math.min(85, Math.round((diff / d) * 100))
+    }
+  }
+  return 2
+}
+
+function strengthsWeaknesses(
   m: { sunScore: number; waterScore: number; windScore: number; privacyScore: number; accessScore: number },
   waterDist: number
-): { strengths: string[]; weaknesses: string[] } {
+) {
   const s: string[] = []
   const w: string[] = []
-  if (m.privacyScore >= 80) s.push('Privacidad excelente — muy aislado')
-  else if (m.privacyScore >= 60) s.push('Buena privacidad — alejado de caminos')
-  else if (m.privacyScore < 15) w.push('⚠️ Privacidad muy baja — demasiado expuesto')
-  else if (m.privacyScore < 35) w.push('Privacidad insuficiente — cercano a caminos')
-  if (m.sunScore >= 70) s.push('Buena exposición solar')
-  else if (m.sunScore < 35) w.push('Sol escaso — demasiada sombra')
-  if (waterDist === 9999) w.push('Sin agua cercana detectada')
-  else if (m.waterScore >= 70) s.push(`Agua a ${waterDist}m — distancia ideal`)
-  else if (m.waterScore < 30) w.push(`Agua a ${waterDist}m — demasiado lejos`)
-  if (m.windScore >= 70) s.push('Bien protegido del viento')
-  else if (m.windScore < 30) w.push('Zona expuesta al viento')
-  if (m.accessScore >= 70) s.push('Acceso equilibrado')
-  else if (m.accessScore < 25) w.push('Acceso demasiado fácil o muy difícil')
+  if (m.privacyScore >= 80) s.push('Privacidad excelente')
+  else if (m.privacyScore >= 55) s.push('Buena privacidad')
+  else if (m.privacyScore < 10) w.push('Muy expuesto — cerca de caminos')
+  else if (m.privacyScore < 30) w.push('Privacidad baja')
+  if (m.sunScore >= 75) s.push('Sol óptimo')
+  else if (m.sunScore < 35) w.push('Sol insuficiente')
+  if (waterDist > 9000) w.push('Sin agua cercana')
+  else if (m.waterScore >= 60) s.push(`Agua a ${waterDist}m`)
+  else if (m.waterScore < 20) w.push(`Agua lejos (${waterDist}m)`)
+  if (m.windScore >= 65) s.push('Protegido del viento')
+  else if (m.windScore < 30) w.push('Expuesto al viento')
+  if (m.accessScore >= 60) s.push('Buen acceso')
+  else if (m.accessScore < 20) w.push('Acceso difícil o nulo')
   return { strengths: s, weaknesses: w }
 }
 
@@ -224,77 +260,58 @@ export function useAnalysis() {
     setResults([])
     setWaterGeoJson([])
 
-    setProgress(1)
+    const grid = generateGrid(center, radiusM, densityM)
+    setProgress(2)
 
-    let features: GeoFeatures = { waterNodes: [], pathNodes: [], roadNodes: [] }
-    try {
-      features = await fetchGeoFeatures(center, radiusM)
-    } catch { /* continue without features */ }
+    const [features, elMap] = await Promise.all([
+      fetchGeoFeatures(center, radiusM),
+      fetchElevations(grid),
+    ])
+    if (abortRef.current) { setIsAnalyzing(false); return }
 
     setWaterGeoJson(features.waterNodes)
-    setProgress(5)
+    setProgress(20)
 
-    const grid = generateGrid(center, radiusM, densityM)
-    const BATCH = 100
+    const steps = grid.length
     const analyzed: AnalyzedSpot[] = []
 
-    for (let i = 0; i < grid.length && !abortRef.current; i += BATCH) {
-      const batch = grid.slice(i, i + BATCH)
-      const elevations = await fetchElevationBatch(batch).catch(() => batch.map(() => 0))
+    for (let i = 0; i < steps && !abortRef.current; i++) {
+      const pt = grid[i]
+      const el = elAt(elMap, pt)
 
-      for (let j = 0; j < batch.length && !abortRef.current; j++) {
-        const pt = batch[j]
-        const el = elevations[j] || 0
+      const asp = aspectStr(pt, el, elMap, grid)
+      const slp = slopeDeg(pt, el, elMap, grid)
 
-        const neighbors: { lat: number; lng: number; el: number }[] = []
-        for (let k = 0; k < batch.length; k++) {
-          if (k !== j) neighbors.push({ lat: batch[k].lat, lng: batch[k].lng, el: elevations[k] || 0 })
-        }
+      const sunScore = calcSun(asp, slp)
+      const waterDist = fastNearestDist(pt, features.waterNodes)
+      const waterScore = calcWater(waterDist)
+      const windScore = calcWind(Math.min(40, slp * 0.6 + (asp !== 'Plano' ? 8 : 0)))
 
-        const aspect = calculateAspect(pt.lat, pt.lng, el, neighbors)
-        const slope = neighbors.length > 0
-          ? Math.min(85, Math.abs(el - neighbors[0].el) / (densityM / 111320) * 10)
-          : 2
+      const pathDist = fastNearestDist(pt, features.pathNodes)
+      const roadDist = fastNearestDist(pt, features.roadNodes)
+      const privacyDist = Math.min(pathDist, roadDist)
+      const privacyScore = calcPrivacy(privacyDist)
+      const accessScore = calcAccess(roadDist, slp)
 
-        const sunScore = calcSunScore(aspect, slope)
+      const metrics = { sunScore, waterScore, windScore, privacyScore, accessScore }
+      const totalW = weights.sun + weights.water + weights.wind + weights.privacy + weights.access
+      const rawScore = (sunScore * weights.sun + waterScore * weights.water + windScore * weights.wind + privacyScore * weights.privacy + accessScore * weights.access) / totalW
 
-        const elevVar = neighbors.length > 0
-          ? Math.sqrt(neighbors.reduce((s, n) => s + (n.el - el) ** 2, 0) / neighbors.length)
-          : 0
-        const windScore = calcWindScore(Math.min(50, elevVar))
+      const { strengths, weaknesses } = strengthsWeaknesses(metrics, waterDist > 9000 ? 9999 : waterDist)
 
-        const waterDist = nearestDist(pt, features.waterNodes)
-        const waterScore = calcWaterScore(waterDist)
-
-        const allPathNodes = [...features.pathNodes, ...features.roadNodes]
-        const pathDist = nearestDist(pt, features.pathNodes)
-        const roadDist = nearestDist(pt, features.roadNodes)
-        const privacyDist = nearestDist(pt, allPathNodes)
-        const privacyScore = calcPrivacyScore(privacyDist)
-
-        const accessScore = calcAccessScore(roadDist, slope)
-
-        const metrics = { sunScore, waterScore, windScore, privacyScore, accessScore }
-        const score = weightedScore(metrics, weights)
-        const { strengths, weaknesses } = generateStrengths(metrics, waterDist === 9999 ? 9999 : waterDist)
-
-        analyzed.push({
-          id: `${pt.lat.toFixed(6)},${pt.lng.toFixed(6)}`,
-          lat: pt.lat, lng: pt.lng,
-          score: Math.round(score),
-          metrics,
-          elevation: Math.round(el),
-          aspect,
-          slope: Math.round(slope),
-          distanceToWater: waterDist,
-          distanceToPath: pathDist,
-          distanceToRoad: roadDist,
-          strengths, weaknesses,
-        })
-      }
-
-      const pct = 5 + Math.round(((i + BATCH) / grid.length) * 90)
-      setProgress(Math.min(pct, 95))
+      analyzed.push({
+        id: `${pt.lat.toFixed(6)},${pt.lng.toFixed(6)}`,
+        lat: pt.lat, lng: pt.lng,
+        score: Math.round(rawScore),
+        metrics,
+        elevation: Math.round(el),
+        aspect: asp,
+        slope: slp,
+        distanceToWater: waterDist,
+        distanceToPath: pathDist,
+        distanceToRoad: roadDist,
+        strengths, weaknesses,
+      })
     }
 
     if (!abortRef.current) {
