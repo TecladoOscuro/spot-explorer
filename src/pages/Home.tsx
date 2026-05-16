@@ -192,7 +192,6 @@ export function Home() {
       {/* Map */}
       <div className="flex-1 min-h-0 relative z-10">
         <MapContainer
-          key={`${center.lat.toFixed(2)},${center.lng.toFixed(2)},${radius}`}
           center={[center.lat, center.lng]}
           zoom={radius > 10000 ? 10 : radius > 5000 ? 12 : 14}
           scrollWheelZoom
