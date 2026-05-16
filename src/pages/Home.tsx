@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { MapContainer, TileLayer, Circle, Marker, Popup, useMap, useMapEvents } from 'react-leaflet'
+import { MapContainer, TileLayer, Circle, Marker, Popup, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { useAnalysis } from '../hooks/useAnalysis'
@@ -33,11 +33,9 @@ const centerIcon = L.divIcon({
 })
 
 function MapEvents({ onCenterChange }: { onCenterChange: (lat: number, lng: number) => void }) {
-  const map = useMap()
   useMapEvents({
-    moveend: () => {
-      const c = map.getCenter()
-      onCenterChange(c.lat, c.lng)
+    click: (e) => {
+      onCenterChange(e.latlng.lat, e.latlng.lng)
     },
   })
   return null
@@ -129,7 +127,7 @@ export function Home() {
         </div>
 
         <div className="flex items-center gap-2 mb-2">
-          <span className="text-xs text-sp-muted whitespace-nowrap">Radio</span>
+          <span className="text-[10px] text-sp-muted whitespace-nowrap w-12">🔍 Radio</span>
           <input
             type="range"
             min={500}
@@ -140,37 +138,40 @@ export function Home() {
             disabled={isAnalyzing}
             className="flex-1 accent-sp-accent h-1"
           />
-          <span className="text-xs text-sp-text w-16 text-right">{(radius / 1000).toFixed(1)}km</span>
+          <span className="text-xs text-sp-text w-14 text-right">{(radius / 1000).toFixed(1)} km</span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[10px] text-sp-muted whitespace-nowrap w-12">📐 Precisión</span>
           <select
             value={density}
             onChange={(e) => setDensity(Number(e.target.value))}
             disabled={isAnalyzing}
-            className="bg-sp-surface text-sp-text text-xs rounded px-2 py-1 border border-sp-border"
+            className="bg-sp-surface text-sp-text text-xs rounded px-2 py-1 border border-sp-border flex-1"
           >
-            <option value={50}>50m</option>
-            <option value={100}>100m</option>
-            <option value={200}>200m</option>
+            <option value={50}>Alta (50m)</option>
+            <option value={100}>Media (100m)</option>
+            <option value={200}>Baja (200m)</option>
           </select>
+          <span className="text-[10px] text-sp-muted w-14 text-right">~{Math.round((radius / 1000) ** 2 * Math.PI / ((density / 1000) ** 2))} pts</span>
+        </div>
 
-          {!isAnalyzing ? (
+        {!isAnalyzing ? (
             <button
               onClick={handleAnalyze}
-              className="flex-1 bg-sp-accent hover:bg-sp-accent-light text-white font-semibold text-sm rounded-lg py-2 transition-colors"
+              className="w-full bg-sp-accent hover:bg-sp-accent-light text-white font-semibold text-sm rounded-lg py-2 transition-colors"
             >
               Analizar zona
             </button>
           ) : (
             <button
               onClick={abort}
-              className="flex-1 bg-sp-danger hover:bg-red-600 text-white font-semibold text-sm rounded-lg py-2 transition-colors"
+              className="w-full bg-sp-danger hover:bg-red-600 text-white font-semibold text-sm rounded-lg py-2 transition-colors"
             >
               Cancelar
             </button>
           )}
-        </div>
+        <p className="text-[10px] text-sp-muted text-center mt-1">Toca el mapa para mover el centro</p>
 
         {isAnalyzing && (
           <div className="mt-2">
@@ -207,11 +208,11 @@ export function Home() {
             center={[center.lat, center.lng]}
             radius={radius}
             pathOptions={{
-              color: '#4a9e4a',
-              fillColor: '#4a9e4a',
-              fillOpacity: 0.08,
-              weight: 1.5,
-              dashArray: '6 4',
+              color: '#ffdd57',
+              fillColor: '#ffdd57',
+              fillOpacity: 0.12,
+              weight: 2.5,
+              dashArray: '10 5',
             }}
           />
           <Marker position={[center.lat, center.lng]} icon={centerIcon} />
