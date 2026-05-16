@@ -86,7 +86,7 @@ function Legend() {
   )
 }
 
-const defaultWeights: WeightConfig = { sun: 5, water: 5, wind: 3, privacy: 4, access: 3 }
+const defaultWeights: WeightConfig = { sun: 4, water: 3, wind: 2, privacy: 8, access: 3 }
 
 export function Home() {
   const [center, setCenter] = useState({ lat: 41.65, lng: 2.0 })

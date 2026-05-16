@@ -129,12 +129,15 @@ function calcWindScore(elevVar: number): number {
 }
 
 function calcPrivacyScore(distToAnyPath: number): number {
-  if (distToAnyPath > 2000) return 100
-  if (distToAnyPath > 800) return 90
-  if (distToAnyPath > 400) return 75
-  if (distToAnyPath > 150) return 50
-  if (distToAnyPath > 60) return 25
-  return 5
+  if (distToAnyPath > 9998) return 100
+  if (distToAnyPath > 2000) return 98
+  if (distToAnyPath > 1000) return 92
+  if (distToAnyPath > 600) return 85
+  if (distToAnyPath > 300) return 65
+  if (distToAnyPath > 150) return 40
+  if (distToAnyPath > 80) return 20
+  if (distToAnyPath > 40) return 8
+  return 0
 }
 
 function calcAccessScore(distToRoad: number, slope: number): number {
@@ -189,6 +192,10 @@ function generateStrengths(
 ): { strengths: string[]; weaknesses: string[] } {
   const s: string[] = []
   const w: string[] = []
+  if (m.privacyScore >= 80) s.push('Privacidad excelente — muy aislado')
+  else if (m.privacyScore >= 60) s.push('Buena privacidad — alejado de caminos')
+  else if (m.privacyScore < 15) w.push('⚠️ Privacidad muy baja — demasiado expuesto')
+  else if (m.privacyScore < 35) w.push('Privacidad insuficiente — cercano a caminos')
   if (m.sunScore >= 70) s.push('Buena exposición solar')
   else if (m.sunScore < 35) w.push('Sol escaso — demasiada sombra')
   if (waterDist === 9999) w.push('Sin agua cercana detectada')
@@ -196,8 +203,6 @@ function generateStrengths(
   else if (m.waterScore < 30) w.push(`Agua a ${waterDist}m — demasiado lejos`)
   if (m.windScore >= 70) s.push('Bien protegido del viento')
   else if (m.windScore < 30) w.push('Zona expuesta al viento')
-  if (m.privacyScore >= 70) s.push('Alta discreción — lejos de caminos')
-  else if (m.privacyScore < 25) w.push('Poca discreción — visible o cercano')
   if (m.accessScore >= 70) s.push('Acceso equilibrado')
   else if (m.accessScore < 25) w.push('Acceso demasiado fácil o muy difícil')
   return { strengths: s, weaknesses: w }
